@@ -105,24 +105,29 @@ if isinstance(selected_range, tuple) and len(selected_range) == 2:
 else:
     start_date, end_date = min_date, max_date
 
-# تنعيم البيانات
+# خيارات التنعيم ونمط العرض النسبي
 smoothing_window = st.sidebar.slider("📈 Trend Smoothing by Month", min_value=1, max_value=12, value=3)
+show_normalized = st.sidebar.checkbox("📊 Show Normalized Growth (Base 100%)", value=False)
 
 # الفلترة
 mask = (df['Date'].dt.date >= start_date) & (df['Date'].dt.date <= end_date)
 filtered = df.loc[mask].copy()
 
+# إعادة ضبط الأساس 100% للفترة المحددة
+filtered['Gold_Norm_Dynamic'] = (filtered['Gold_Price'] / filtered['Gold_Price'].iloc[0]) * 100
+filtered['Euphrates_Norm_Dynamic'] = (filtered['Euphrates_Level_m'] / filtered['Euphrates_Level_m'].iloc[0]) * 100
+
 # تطبيق التنعيم
 if smoothing_window > 1:
     filtered['Gold_Plot'] = filtered['Gold_Price'].rolling(smoothing_window, min_periods=1).mean()
     filtered['Euphrates_Plot'] = filtered['Euphrates_Level_m'].rolling(smoothing_window, min_periods=1).mean()
-    filtered['Gold_Norm_Plot'] = filtered['Gold_Normalized'].rolling(smoothing_window, min_periods=1).mean()
-    filtered['Euphrates_Norm_Plot'] = filtered['Euphrates_Normalized'].rolling(smoothing_window, min_periods=1).mean()
+    filtered['Gold_Norm_Plot'] = filtered['Gold_Norm_Dynamic'].rolling(smoothing_window, min_periods=1).mean()
+    filtered['Euphrates_Norm_Plot'] = filtered['Euphrates_Norm_Dynamic'].rolling(smoothing_window, min_periods=1).mean()
 else:
     filtered['Gold_Plot'] = filtered['Gold_Price']
     filtered['Euphrates_Plot'] = filtered['Euphrates_Level_m']
-    filtered['Gold_Norm_Plot'] = filtered['Gold_Normalized']
-    filtered['Euphrates_Norm_Plot'] = filtered['Euphrates_Normalized']
+    filtered['Gold_Norm_Plot'] = filtered['Gold_Norm_Dynamic']
+    filtered['Euphrates_Norm_Plot'] = filtered['Euphrates_Norm_Dynamic']
 
 # ─── Top Metrics Row ────────────────────────────────────────────────────────
 gold_start = filtered['Gold_Price'].iloc[0]
@@ -158,39 +163,48 @@ tab1, tab2, tab3 = st.tabs(["📈 Dual Time Series", "🔍 Scatter & Trend", "�
 with tab1:
     fig1 = go.Figure()
     
+    y1_col = 'Gold_Norm_Plot' if show_normalized else 'Gold_Plot'
+    y2_col = 'Euphrates_Norm_Plot' if show_normalized else 'Euphrates_Plot'
+    
+    y1_name = "Gold Index (Base 100%)" if show_normalized else "Gold Price (Ounce, $)"
+    y2_name = "Euphrates Index (Base 100%)" if show_normalized else "Euphrates Water Level (m)"
+    
+    y1_hover = "%{y:,.1f}%" if show_normalized else "$%{y:,.1f}"
+    y2_hover = "%{y:,.2f}%" if show_normalized else "%{y:.2f} m"
+
     # مسار الذهب
     fig1.add_trace(go.Scatter(
         x=filtered['Date'],
-        y=filtered['Gold_Plot'],
-        name="Gold Price (Ounce, $)",
+        y=filtered[y1_col],
+        name=y1_name,
         line=dict(color="#FFB300", width=3),
         yaxis="y1",
-        hovertemplate="<b>Date:</b> %{x|%b %Y}<br><b>Gold:</b> $%{y:,.1f}<extra></extra>"
+        hovertemplate=f"<b>Date:</b> %{{x|%b %Y}}<br><b>Gold:</b> {y1_hover}<extra></extra>"
     ))
     
     # مسار منسوب مياه الفرات
     fig1.add_trace(go.Scatter(
         x=filtered['Date'],
-        y=filtered['Euphrates_Plot'],
-        name="Euphrates Water Level (m)",
+        y=filtered[y2_col],
+        name=y2_name,
         line=dict(color="#0077B6", width=2.5),
         yaxis="y2",
-        hovertemplate="<b>Date:</b> %{x|%b %Y}<br><b>Level:</b> %{y:.2f} m<extra></extra>"
+        hovertemplate=f"<b>Date:</b> %{{x|%b %Y}}<br><b>Level:</b> {y2_hover}<extra></extra>"
     ))
     
     fig1.update_layout(
-        title=dict(text=f"Gold Price vs Euphrates Water Level ({start_date.year} – {end_date.year})"),
+        title=dict(text=f"Gold vs Euphrates Analysis ({start_date.year} – {end_date.year}) - {'Normalized (Base 100%)' if show_normalized else 'Absolute Values'}"),
         template="plotly_white",
         height=520,
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         yaxis=dict(
-            title=dict(text="Gold Price ($)", font=dict(color="#FFB300")),
+            title=dict(text=y1_name, font=dict(color="#FFB300")),
             tickfont=dict(color="#FFB300"),
             side="left"
         ),
         yaxis2=dict(
-            title=dict(text="Water Surface Height (m above sea level)", font=dict(color="#0077B6")),
+            title=dict(text=y2_name, font=dict(color="#0077B6")),
             tickfont=dict(color="#0077B6"),
             overlaying="y",
             side="right",
@@ -201,7 +215,7 @@ with tab1:
     st.plotly_chart(fig1, width="stretch")
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TAB 2: Scatter & Linear Regression
+# TAB 2: Scatter, Linear Regression & Dynamic Interpretation
 # ═══════════════════════════════════════════════════════════════════════════
 with tab2:
     col_plot, col_info = st.columns([3, 1])
@@ -251,6 +265,15 @@ with tab2:
             st.success("✅ Strong Inverse Alignment")
         else:
             st.info("ℹ️ Moderate Correlation")
+
+    # ── Dynamic Data Storytelling Card ─────────────────────────────────────
+    st.info(
+        f"""
+        💡 **Analytical Interpretation (Data Storytelling):**
+        * **العلاقة العكسية:** معامل الارتباط بقيمة **`{pearson_val:.2f}`** يشير إلى تزامن انخفاض منسوب المياه مع صعود أسعار الذهب خلال الفترة المحددة ({start_date.year} – {end_date.year}).
+        * **تفسير الانحدار الخطي:** انخفاض منسوب مياه الفرات بمقدار **1 متر** ارتبط إحصائياً بارتفاع متوسط في سعر أونصة الذهب بمقدار **${abs(slope):,.2f}** (بمعامل تفسير $R^2 = {r2:.1%}$).
+        """
+    )
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TAB 3: Data Summary & Export
