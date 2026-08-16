@@ -254,8 +254,10 @@ with tab2:
     st.info(
         f"""
         💡 **Analytical Interpretation:**
-        **Inverse Correlation Dynamics**: The paired time series demonstrates a sustained structural divergence across the observation window ({2016} – {2026}); persistent declines in hydrological water elevation closely coincide with secular bull cycles in global gold valuations *(Pearson correlation: {pearson_val:.2f})*.
-        **Valuation Sensitivity (OLS Fit)**: The linear regression model indicates that each 1-meter drop in Euphrates water elevation is empirically associated with an average gold price appreciation of *${abs(slope):,.2f}*/oz, with the model explaining *{r2:.1%} ($R^2$)* of the cross-sectional variance.
+
+        * **Inverse Correlation Dynamics:** The paired time series demonstrates a sustained structural divergence across the observation window ({start_date.year} – {end_date.year}); persistent declines in hydrological water elevation closely coincide with secular bull cycles in global gold valuations *(Pearson correlation: `{pearson_val:.2f}`)*.
+
+        * **Valuation Sensitivity (OLS Fit):** The linear regression model indicates that each 1-meter drop in Euphrates water elevation is empirically associated with an average gold price appreciation of *${abs(slope):,.2f}/oz*, with the model explaining *{r2:.1%} ($R^2$)* of the cross-sectional variance.
         """
     )
 
