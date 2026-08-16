@@ -103,7 +103,6 @@ else:
 
 # خيارات التنعيم ونمط العرض النسبي
 smoothing_window = st.sidebar.slider("📈 Trend Smoothing by Month", min_value=1, max_value=12, value=3)
-show_normalized = st.sidebar.checkbox("📊 Show Normalized Growth (Base 100%)", value=False)
 
 # الفلترة
 mask = (df['Date'].dt.date >= start_date) & (df['Date'].dt.date <= end_date)
@@ -159,14 +158,14 @@ tab1, tab2, tab3 = st.tabs(["📈 Dual Time Series", "🔍 Scatter & Trend", "�
 with tab1:
     fig1 = go.Figure()
     
-    y1_col = 'Gold_Norm_Plot' if show_normalized else 'Gold_Plot'
-    y2_col = 'Euphrates_Norm_Plot' if show_normalized else 'Euphrates_Plot'
+    y1_col = 'Gold_Norm_Plot' if 'Gold_Plot'
+    y2_col = 'Euphrates_Norm_Plot' if 'Euphrates_Plot'
     
-    y1_name = "Gold Index (Base 100%)" if show_normalized else "Gold Price (Ounce, $)"
-    y2_name = "Euphrates Index (Base 100%)" if show_normalized else "Euphrates Water Level (m)"
+    y1_name = "Gold Index (Base 100%)" if "Gold Price (Ounce, $)"
+    y2_name = "Euphrates Index (Base 100%)" if "Euphrates Water Level (m)"
     
-    y1_hover = "%{y:,.1f}%" if show_normalized else "$%{y:,.1f}"
-    y2_hover = "%{y:,.2f}%" if show_normalized else "%{y:.2f} m"
+    y1_hover = "%{y:,.1f}%" if "$%{y:,.1f}"
+    y2_hover = "%{y:,.2f}%" if "%{y:.2f} m"
 
     # مسار الذهب
     fig1.add_trace(go.Scatter(
