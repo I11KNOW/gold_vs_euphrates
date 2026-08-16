@@ -155,6 +155,9 @@ tab1, tab2, tab3 = st.tabs(["📈 Dual Time Series", "🔍 Scatter & Trend", "�
 # ═══════════════════════════════════════════════════════════════════════════
 # TAB 1: Dual Time Series
 # ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
+# TAB 1: Dual Time Series
+# ═══════════════════════════════════════════════════════════════════════════
 with tab1:
     fig1 = go.Figure()
     
@@ -194,50 +197,7 @@ with tab1:
         ),
         xaxis=dict(title="Date")
     )
-    st.plotly_chart(fig1, use_container_width=True)
-
-    # مسار الذهب
-    fig1.add_trace(go.Scatter(
-        x=filtered['Date'],
-        y=filtered[y1_col],
-        name=y1_name,
-        line=dict(color="#FFB300", width=3),
-        yaxis="y1",
-        hovertemplate=f"<b>Date:</b> %{{x|%b %Y}}<br><b>Gold:</b> {y1_hover}<extra></extra>"
-    ))
-    
-    # مسار منسوب مياه الفرات
-    fig1.add_trace(go.Scatter(
-        x=filtered['Date'],
-        y=filtered[y2_col],
-        name=y2_name,
-        line=dict(color="#0077B6", width=2.5),
-        yaxis="y2",
-        hovertemplate=f"<b>Date:</b> %{{x|%b %Y}}<br><b>Level:</b> {y2_hover}<extra></extra>"
-    ))
-    
-    fig1.update_layout(
-        title=dict(text=f"Gold vs Euphrates Analysis ({start_date.year} – {end_date.year}) - {'Normalized (Base 100%)' if show_normalized else 'Absolute Values'}"),
-        template="plotly_white",
-        height=520,
-        hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        yaxis=dict(
-            title=dict(text=y1_name, font=dict(color="#FFB300")),
-            tickfont=dict(color="#FFB300"),
-            side="left"
-        ),
-        yaxis2=dict(
-            title=dict(text=y2_name, font=dict(color="#0077B6")),
-            tickfont=dict(color="#0077B6"),
-            overlaying="y",
-            side="right",
-            showgrid=False
-        ),
-        xaxis=dict(title=dict(text="Date"))
-    )
     st.plotly_chart(fig1, width="stretch")
-
 # ═══════════════════════════════════════════════════════════════════════════
 # TAB 2: Scatter, Linear Regression & Dynamic Interpretation
 # ═══════════════════════════════════════════════════════════════════════════
