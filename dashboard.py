@@ -158,14 +158,43 @@ tab1, tab2, tab3 = st.tabs(["📈 Dual Time Series", "🔍 Scatter & Trend", "�
 with tab1:
     fig1 = go.Figure()
     
-    y1_col = 'Gold_Norm_Plot' if 'Gold_Plot'
-    y2_col = 'Euphrates_Norm_Plot' if 'Euphrates_Plot'
+    # مسار الذهب
+    fig1.add_trace(go.Scatter(
+        x=filtered['Date'],
+        y=filtered['Gold_Plot'],
+        name="Gold Price (Ounce, $)",
+        line=dict(color="#FFB300", width=3),
+        yaxis="y1"
+    ))
     
-    y1_name = "Gold Index (Base 100%)" if "Gold Price (Ounce, $)"
-    y2_name = "Euphrates Index (Base 100%)" if "Euphrates Water Level (m)"
+    # مسار منسوب مياه الفرات
+    fig1.add_trace(go.Scatter(
+        x=filtered['Date'],
+        y=filtered['Euphrates_Plot'],
+        name="Euphrates Water Level (m)",
+        line=dict(color="#0077B6", width=2.5),
+        yaxis="y2"
+    ))
     
-    y1_hover = "%{y:,.1f}%" if "$%{y:,.1f}"
-    y2_hover = "%{y:,.2f}%" if "%{y:.2f} m"
+    fig1.update_layout(
+        title=f"Gold Price vs Euphrates Water Level ({start_date.year} – {end_date.year})",
+        template="plotly_white",
+        height=520,
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        yaxis=dict(
+            title="Gold Price ($)",
+            side="left"
+        ),
+        yaxis2=dict(
+            title="Water Surface Height (m)",
+            overlaying="y",
+            side="right",
+            showgrid=False
+        ),
+        xaxis=dict(title="Date")
+    )
+    st.plotly_chart(fig1, use_container_width=True)
 
     # مسار الذهب
     fig1.add_trace(go.Scatter(
