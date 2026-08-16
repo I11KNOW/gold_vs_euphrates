@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-An interactive Exploratory Data Analysis (EDA) dashboard investigating the correlation between **Gold Futures (`GC=F`)** and **Euphrates River water levels** (Satellite Altimetry Station 41518, Iraq) from 2016 to 2026.
+An interactive Exploratory Data Analysis (EDA) dashboard investigating the correlation between **Gold Price** and **Euphrates Water Level** from 2016 to 2026.
 
 ---
 
