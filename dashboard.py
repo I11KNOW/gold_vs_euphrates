@@ -79,10 +79,6 @@ def load_and_merge_data():
     merged.columns = ['Date', 'Gold_Price', 'Euphrates_Level_m']
     merged['Year'] = merged['Date'].dt.year
 
-    # 4. حساب المؤشر النسبي للنمو (Base 100%)
-    merged['Gold_Normalized'] = (merged['Gold_Price'] / merged['Gold_Price'].iloc[0]) * 100
-    merged['Euphrates_Normalized'] = (merged['Euphrates_Level_m'] / merged['Euphrates_Level_m'].iloc[0]) * 100
-
     return merged
 
 df = load_and_merge_data()
