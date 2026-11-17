@@ -1,4 +1,4 @@
-# 🌊 Gold Price vs. Euphrates River Water Level (2016–2026)
+# Gold Price vs. Euphrates River Water Level (2016–2026)
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://streamlit.io/)
 [![Python](https://img.shields.io/badge/Python-3.10%20--%203.13-blue.svg)](https://www.python.org/)
