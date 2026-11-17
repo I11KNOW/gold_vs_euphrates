@@ -1,16 +1,37 @@
 """
 Streamlit Dashboard: Gold Price vs. Euphrates River Water Level (2016 - 2026)
 =============================================================================
-Direct File Path Integration (Station 41518, Iraq)
+Interactive EDA dashboard comparing COMEX Gold Futures (GC=F) with DAHITI
+satellite radar altimetry measurements for Euphrates River Station 41518 (Iraq).
 """
 
-import os
-import streamlit as st
-import yfinance as yf
+from __future__ import annotations
+
 import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
-from scipy import stats
+import streamlit as st
+
+from src.analysis import (
+    align_datasets,
+    apply_window_and_smoothing,
+    build_annual_summary,
+    compute_rolling_correlation,
+    compute_statistics,
+)
+from src.charts import (
+    build_rolling_correlation_chart,
+    build_scatter_regression_chart,
+    build_time_series_chart,
+)
+from src.config import (
+    ALIGNMENT_MODES,
+    ALIGNMENT_MONTHLY,
+    DAHITI_SATELLITE_MISSION,
+    DAHITI_STATION_ID,
+    DAHITI_STATION_LAT,
+    DAHITI_STATION_LON,
+    ROLLING_CORR_WINDOW,
+)
+from src.data_loader import clear_live_caches, load_euphrates_data, load_gold_prices
 
 # ─── Page Configuration ─────────────────────────────────────────────────────
 st.set_page_config(
@@ -23,8 +44,10 @@ st.set_page_config(
 # ─── Header Section ─────────────────────────────────────────────────────────
 st.title("🥇 Gold Price vs 🌊 Euphrates River Water Level")
 st.markdown(
-    """
-Interactive Dashboard comparing Gold ounce prices with real-world satellite measurements of the Euphrates River (Station 41518, Iraq) from 2016 to 2026.
+    f"""
+Interactive EDA dashboard comparing COMEX Gold Futures (`GC=F`) against satellite altimetry
+measurements of the Euphrates River (**DAHITI Station {DAHITI_STATION_ID}**, Iraq —
+`{DAHITI_STATION_LAT:.4f}°N, {DAHITI_STATION_LON:.4f}°E`) from 2016 to 2026.
 
 ---
 
@@ -33,256 +56,352 @@ Interactive Dashboard comparing Gold ounce prices with real-world satellite meas
 )
 st.divider()
 
-# ─── Data Loading & Merging ─────────────────────────────────────────────────
-@st.cache_data
-def load_and_merge_data():
-    csv_file = r"C:\Users\IT\Desktop\euphrates_data.csv"
-    
-    if not os.path.exists(csv_file):
-        if os.path.exists("euphrates_data.csv"):
-            csv_file = "euphrates_data.csv"
-        else:
-            st.error(f"❌ لم يتم العثور على الملف في المسار: {csv_file}")
-            st.stop()
+# ─── Data Ingestion (Live with Automatic Local Fallback) ────────────────────
+try:
+    euphrates_res = load_euphrates_data()
+    gold_res = load_gold_prices()
+except Exception as exc:
+    st.error(f"Critical error loading dashboard datasets: {exc}")
+    st.stop()
 
-    # 1. قراءة بيانات الفرات من DAHITI بالفاصلة المنقوطة
-    df_euphrates = pd.read_csv(csv_file, sep=";")
-    df_euphrates['Date'] = pd.to_datetime(df_euphrates['datetime'])
-    
-    try:
-        euphrates_monthly = df_euphrates.set_index('Date')[['wse']].resample('ME').mean()
-    except Exception:
-        euphrates_monthly = df_euphrates.set_index('Date')[['wse']].resample('M').mean()
-        
-    euphrates_monthly.columns = ['Euphrates_Level_m']
-
-    # 2. سحب أسعار الذهب ابتداءً من 2016 لمطابقة محطة الفرات
-    start_str = euphrates_monthly.index.min().strftime('%Y-%m-%d')
-    gold_raw = yf.download("GC=F", start=start_str, progress=False)
-    
-    if isinstance(gold_raw.columns, pd.MultiIndex):
-        gold_close = gold_raw['Close']
-        if isinstance(gold_close, pd.DataFrame):
-            gold_close = gold_close.iloc[:, 0]
-    else:
-        gold_close = gold_raw['Close']
-
-    try:
-        gold_monthly = gold_close.resample('ME').mean().to_frame()
-    except Exception:
-        gold_monthly = gold_close.resample('M').mean().to_frame()
-        
-    gold_monthly.columns = ['Gold_Price']
-
-    # 3. دمج الجدولين زمنياً
-    merged = pd.concat([gold_monthly, euphrates_monthly], axis=1).dropna().reset_index()
-    merged.columns = ['Date', 'Gold_Price', 'Euphrates_Level_m']
-    merged['Year'] = merged['Date'].dt.year
-
-    return merged
-
-df = load_and_merge_data()
+fallback_warnings = [
+    msg
+    for msg in (euphrates_res.warning_message, gold_res.warning_message)
+    if msg
+]
+if fallback_warnings:
+    st.warning("⚠️ " + " | ".join(fallback_warnings))
 
 # ─── Sidebar Controls ───────────────────────────────────────────────────────
-st.sidebar.header("⚙️ Controls & Filters")
+st.sidebar.header("⚙️ Controls & Alignment")
 
-min_date = df['Date'].min().date()
-max_date = df['Date'].max().date()
+alignment_mode = st.sidebar.radio(
+    "🔗 Frequency Alignment",
+    options=ALIGNMENT_MODES,
+    index=0,
+    key="alignment_mode",
+    help=(
+        "Monthly Mean aggregates Gold trading days and satellite passes onto a uniform "
+        "calendar month-end grid. Satellite Pass Date pairs each instantaneous ~27-day "
+        "overpass directly with the nearest Gold trading day."
+    ),
+)
+
+max_uncertainty = st.sidebar.slider(
+    "🎯 Max Altimetry Uncertainty (wse_u, m)",
+    min_value=0.1,
+    max_value=2.5,
+    value=2.5,
+    step=0.1,
+    key="max_uncertainty",
+    help=(
+        "Filter out satellite passes whose estimated height uncertainty (wse_u) exceeds "
+        "this threshold. Set to 2.5 m to include all available readings."
+    ),
+)
+
+aligned_df, align_meta = align_datasets(
+    gold_df=gold_res.df,
+    euphrates_df=euphrates_res.df,
+    alignment_mode=alignment_mode,
+    max_uncertainty_m=max_uncertainty,
+)
+
+valid_dates = aligned_df.loc[aligned_df["Valid_Pair"], "Date"] if not aligned_df.empty else pd.Series(dtype="datetime64[ns]")
+if valid_dates.empty:
+    st.warning(
+        "No paired observations remain under the current uncertainty threshold. "
+        "Increase the Max Altimetry Uncertainty slider in the sidebar."
+    )
+    st.stop()
+
+min_date = valid_dates.min().date()
+max_date = valid_dates.max().date()
 
 selected_range = st.sidebar.date_input(
     "📅 Date Range",
     value=(min_date, max_date),
     min_value=min_date,
     max_value=max_date,
+    key="date_range",
 )
 
-if isinstance(selected_range, tuple) and len(selected_range) == 2:
-    start_date, end_date = selected_range
+if isinstance(selected_range, (tuple, list)) and len(selected_range) == 2:
+    start_date, end_date = sorted((selected_range[0], selected_range[1]))
+elif isinstance(selected_range, (tuple, list)) and len(selected_range) == 1:
+    start_date, end_date = selected_range[0], max_date
 else:
     start_date, end_date = min_date, max_date
 
-# خيارات التنعيم ونمط العرض النسبي
-smoothing_window = st.sidebar.slider("📈 Trend Smoothing by Month", min_value=1, max_value=12, value=3)
+smoothing_window = st.sidebar.slider(
+    "📈 Trend Smoothing (Periods)",
+    min_value=1,
+    max_value=12,
+    value=3,
+    key="smoothing_window",
+    help="Rolling window across uniform calendar months (Monthly mode) or consecutive passes (Pass Date mode).",
+)
 
-# الفلترة
-mask = (df['Date'].dt.date >= start_date) & (df['Date'].dt.date <= end_date)
-filtered = df.loc[mask].copy()
+show_normalized = st.sidebar.checkbox(
+    "📊 Show Normalized Growth (Base 100%)",
+    value=False,
+    key="show_normalized",
+    help="Re-index both series to 100% at the start of the selected date range.",
+)
 
-# إعادة ضبط الأساس 100% للفترة المحددة
-filtered['Gold_Norm_Dynamic'] = (filtered['Gold_Price'] / filtered['Gold_Price'].iloc[0]) * 100
-filtered['Euphrates_Norm_Dynamic'] = (filtered['Euphrates_Level_m'] / filtered['Euphrates_Level_m'].iloc[0]) * 100
+show_uncertainty = st.sidebar.checkbox(
+    "🌫️ Show Water Uncertainty Band (±wse_u)",
+    value=False,
+    key="show_uncertainty",
+    disabled=show_normalized,
+    help="Overlay satellite altimetry uncertainty bounds on the water level curve (absolute mode only).",
+)
 
-# تطبيق التنعيم
-if smoothing_window > 1:
-    filtered['Gold_Plot'] = filtered['Gold_Price'].rolling(smoothing_window, min_periods=1).mean()
-    filtered['Euphrates_Plot'] = filtered['Euphrates_Level_m'].rolling(smoothing_window, min_periods=1).mean()
-    filtered['Gold_Norm_Plot'] = filtered['Gold_Norm_Dynamic'].rolling(smoothing_window, min_periods=1).mean()
-    filtered['Euphrates_Norm_Plot'] = filtered['Euphrates_Norm_Dynamic'].rolling(smoothing_window, min_periods=1).mean()
-else:
-    filtered['Gold_Plot'] = filtered['Gold_Price']
-    filtered['Euphrates_Plot'] = filtered['Euphrates_Level_m']
-    filtered['Gold_Norm_Plot'] = filtered['Gold_Norm_Dynamic']
-    filtered['Euphrates_Norm_Plot'] = filtered['Euphrates_Norm_Dynamic']
+st.sidebar.divider()
+st.sidebar.subheader("📡 Data Feed Status")
+eu_badge = "🟢 Live" if euphrates_res.source_mode.startswith("live") else "🟡 Fallback"
+gold_badge = "🟢 Live" if gold_res.source_mode.startswith("live") else "🟡 Fallback"
+st.sidebar.markdown(f"**Euphrates ({DAHITI_STATION_ID}):** {eu_badge}")
+st.sidebar.caption(
+    f"{euphrates_res.source_detail} · Latest: `{euphrates_res.latest_date.strftime('%Y-%m-%d')}`"
+)
+st.sidebar.markdown(f"**Gold (`GC=F`):** {gold_badge}")
+st.sidebar.caption(
+    f"{gold_res.source_detail} · Latest: `{gold_res.latest_date.strftime('%Y-%m-%d')}`"
+)
+
+if st.sidebar.button("🔄 Refresh Live Data", key="refresh_data_btn"):
+    clear_live_caches()
+    st.rerun()
+
+# ─── Filtering, Smoothing & Statistics ──────────────────────────────────────
+filtered = apply_window_and_smoothing(
+    aligned_df=aligned_df,
+    start_date=start_date,
+    end_date=end_date,
+    smoothing_window=smoothing_window,
+    alignment_mode=alignment_mode,
+)
+
+if filtered.empty:
+    st.warning(
+        "No valid paired observations match the selected date range and filters. "
+        "Please expand the Date Range or relax the uncertainty filter."
+    )
+    st.stop()
+
+stats_summary = compute_statistics(filtered, alignment_mode=alignment_mode)
 
 # ─── Top Metrics Row ────────────────────────────────────────────────────────
-gold_start = filtered['Gold_Price'].iloc[0]
-gold_end = filtered['Gold_Price'].iloc[-1]
-gold_pct = ((gold_end - gold_start) / gold_start) * 100
+gold_start = float(filtered["Gold_Price"].iloc[0])
+gold_end = float(filtered["Gold_Price"].iloc[-1])
+gold_pct = ((gold_end - gold_start) / gold_start) * 100.0 if gold_start else 0.0
 
-water_start = filtered['Euphrates_Level_m'].iloc[0]
-water_end = filtered['Euphrates_Level_m'].iloc[-1]
-water_pct = ((water_end - water_start) / water_start) * 100
+water_start = float(filtered["Euphrates_Level_m"].iloc[0])
+water_end = float(filtered["Euphrates_Level_m"].iloc[-1])
+water_pct = ((water_end - water_start) / water_start) * 100.0 if water_start else 0.0
 
-pearson_val, _ = stats.pearsonr(filtered['Gold_Price'], filtered['Euphrates_Level_m'])
-
+unit_label = "Months" if alignment_mode == ALIGNMENT_MONTHLY else "Passes"
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    st.metric("📅 Data Points", f"{len(filtered)} Months", f"{start_date.year} to {end_date.year}")
+    st.metric(
+        "📅 Paired Observations",
+        f"{len(filtered)} {unit_label}",
+        f"{start_date.year} to {end_date.year}",
+    )
 with col2:
-    st.metric("🥇 Gold Price Change", f"{gold_pct:+.1f}%", f"${gold_end:,.0f} Current")
+    st.metric(
+        "🥇 Gold Price Change",
+        f"{gold_pct:+.1f}%",
+        f"${gold_end:,.0f} Window End",
+    )
 with col3:
-    st.metric("🌊 Water Level Change", f"{water_pct:+.1f}%", f"{water_end:.2f}m Current", delta_color="inverse")
+    st.metric(
+        "🌊 Water Level Change",
+        f"{water_pct:+.1f}%",
+        f"{water_end:.2f}m Window End",
+        delta_color="inverse",
+    )
 with col4:
-    st.metric("📊 Pearson Correlation (r)", f"{pearson_val:.2f}", "Strong Inverse" if pearson_val < -0.5 else "Moderate Inverse")
-    st.caption("ℹ️ Pearson (r): يقيس شدة واتجاه العلاقة الخطية بين السلسلتين (بين -1 و +1).")
+    if stats_summary.is_valid:
+        st.metric(
+            "📊 Pearson Correlation (r)",
+            f"{stats_summary.pearson_r:+.2f}",
+            stats_summary.correlation_label,
+        )
+    else:
+        st.metric("📊 Pearson Correlation (r)", "N/A", "Need ≥ 3 observations")
+    st.caption(
+        "Measures linear level co-movement (-1 to +1); see Tab 2 for first-difference checks."
+    )
 
 st.divider()
 
 # ─── Tabs ───────────────────────────────────────────────────────────────────
-tab1, tab2, tab3 = st.tabs(["📈 Dual Time Series", "🔍 Scatter & Trend", "📋 Data & Summary"])
+tab1, tab2, tab3 = st.tabs(
+    ["📈 Dual Time Series", "🔍 Scatter & Trend", "📋 Data & Summary"]
+)
 
-# ═══════════════════════════════════════════════════════════════════════════
-# TAB 1: Dual Time Series
-# ═══════════════════════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════════════════════
 # TAB 1: Dual Time Series
 # ═══════════════════════════════════════════════════════════════════════════
 with tab1:
-    fig1 = go.Figure()
-    
-    # مسار الذهب
-    fig1.add_trace(go.Scatter(
-        x=filtered['Date'],
-        y=filtered['Gold_Plot'],
-        name="Gold Price (Ounce, $)",
-        line=dict(color="#FFB300", width=3),
-        yaxis="y1"
-    ))
-    
-    # مسار منسوب مياه الفرات
-    fig1.add_trace(go.Scatter(
-        x=filtered['Date'],
-        y=filtered['Euphrates_Plot'],
-        name="Euphrates Water Level (m)",
-        line=dict(color="#0077B6", width=2.5),
-        yaxis="y2"
-    ))
-    
-    fig1.update_layout(
-        title=f"Gold Price vs Euphrates Water Level ({start_date.year} – {end_date.year})",
-        template="plotly_white",
-        height=520,
-        hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        yaxis=dict(
-            title="Gold Price ($)",
-            side="left"
-        ),
-        yaxis2=dict(
-            title="Water Surface Height (m)",
-            overlaying="y",
-            side="right",
-            showgrid=False
-        ),
-        xaxis=dict(title="Date")
+    fig1 = build_time_series_chart(
+        df=filtered,
+        show_normalized=show_normalized,
+        show_uncertainty=show_uncertainty,
+        start_date=start_date,
+        end_date=end_date,
+        smoothing_window=smoothing_window,
     )
-    st.plotly_chart(fig1, width="stretch")
+    st.plotly_chart(fig1, width="stretch", theme=None)
+
+    with st.expander("ℹ️ Alignment & Data Coverage Diagnostics", expanded=False):
+        if alignment_mode == ALIGNMENT_MONTHLY:
+            missing_str = ", ".join(align_meta.missing_months) if align_meta.missing_months else "None"
+            st.markdown(
+                f"""
+* **Alignment Strategy:** Monthly calendar month-end (`ME`) grid spanning `{align_meta.calendar_grid_months}` months (`{align_meta.aligned_valid_rows}` paired months).
+* **Missing Satellite Months (Preserved as Grid Gaps):** `{align_meta.missing_months_count}` ({missing_str}). Rolling smoothing operates on the uniform calendar grid so missing months are never collapsed across gaps.
+* **Months with Multiple Passes Averaged:** `{align_meta.multi_pass_months_count}` (due to ~27-day {DAHITI_SATELLITE_MISSION} repeat orbit).
+* **Passes Filtered Out by Uncertainty (`wse_u > {max_uncertainty:.1f} m`):** `{align_meta.dropped_uncertainty_rows}` of `{align_meta.raw_euphrates_rows}` raw readings.
+"""
+            )
+        else:
+            st.markdown(
+                f"""
+* **Alignment Strategy:** Each satellite overpass timestamp is paired directly with the nearest Gold futures trading day (`merge_asof`, tolerance ±5 days).
+* **Max Calendar Match Lag:** `{align_meta.max_match_gap_days}` day(s) (weekend/holiday offset).
+* **Passes Retained:** `{align_meta.aligned_valid_rows}` of `{align_meta.raw_euphrates_rows}` raw readings (`{align_meta.dropped_uncertainty_rows}` filtered by `wse_u > {max_uncertainty:.1f} m`).
+"""
+            )
+
 # ═══════════════════════════════════════════════════════════════════════════
-# TAB 2: Scatter, Linear Regression & Dynamic Interpretation
+# TAB 2: Scatter, Regression & Honest Statistical Diagnostics
 # ═══════════════════════════════════════════════════════════════════════════
 with tab2:
-    col_plot, col_info = st.columns([3, 1])
-    
-    x_data = filtered['Euphrates_Level_m']
-    y_data = filtered['Gold_Price']
-    slope, intercept, r_val, p_val, std_err = stats.linregress(x_data, y_data)
-    
-    x_fit = np.linspace(x_data.min(), x_data.max(), 100)
-    y_fit = slope * x_fit + intercept
-    
-    with col_plot:
-        fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(
-            x=x_data,
-            y=y_data,
-            mode='markers',
-            name='Monthly Observations',
-            marker=dict(size=8, color='#0077B6', opacity=0.7, line=dict(width=1, color='white')),
-            hovertemplate="<b>Level:</b> %{x:.2f} m<br><b>Gold:</b> $%{y:,.1f}<extra></extra>"
-        ))
-        fig2.add_trace(go.Scatter(
-            x=x_fit,
-            y=y_fit,
-            mode='lines',
-            name=f'Trend Fit (Slope: {slope:.1f})',
-            line=dict(color='#E63946', width=2.5)
-        ))
-        fig2.update_layout(
-            title=dict(text="Scatter Analysis: Water Level vs. Gold Valuation"),
-            xaxis=dict(title=dict(text="Euphrates Water Height (m)")),
-            yaxis=dict(title=dict(text="Gold Price ($)")),
-            template="plotly_white",
-            height=460
+    if not stats_summary.is_valid:
+        st.info(stats_summary.invalid_reason)
+    else:
+        col_plot, col_info = st.columns([3, 1])
+
+        with col_plot:
+            fig2 = build_scatter_regression_chart(filtered, stats_summary)
+            st.plotly_chart(fig2, width="stretch", theme=None)
+
+        with col_info:
+            st.subheader("Statistical Fit")
+            diff_str = (
+                f"`{stats_summary.diff_pearson_r:+.3f}` (`p={stats_summary.diff_pearson_p:.3f}`, n={stats_summary.diff_n})"
+                if stats_summary.diff_n >= 3 and not pd.isna(stats_summary.diff_pearson_r)
+                else "`N/A` (insufficient consecutive pairs)"
+            )
+            st.markdown(
+                f"""
+* **Pearson (r):** `{stats_summary.pearson_r:+.3f}` (`p={stats_summary.pearson_p:.2e}`)
+* **Spearman (ρ):** `{stats_summary.spearman_rho:+.3f}` (`p={stats_summary.spearman_p:.2e}`)
+* **R² (Level Fit):** `{stats_summary.r_squared:.3f}`
+* **OLS Slope:** `{stats_summary.ols_slope:+,.2f} $/m`
+* **First-Diff Δr:** {diff_str}
+"""
+            )
+            if stats_summary.pearson_r <= -0.5:
+                st.success("✅ Strong Inverse Level Association")
+            elif stats_summary.pearson_r >= 0.5:
+                st.warning("📈 Strong Positive Level Association")
+            elif stats_summary.pearson_r <= -0.2:
+                st.info("📉 Moderate Inverse Level Association")
+            elif stats_summary.pearson_r >= 0.2:
+                st.info("📈 Moderate Positive Level Association")
+            else:
+                st.info("⚖️ Weak / Negligible Linear Association")
+
+        # Dynamic Data Storytelling & Statistical Caveat Card
+        slope_direction = (
+            "appreciation" if stats_summary.ols_slope < 0 else "decline"
         )
-        st.plotly_chart(fig2, width="stretch")
+        diff_note = (
+            f"However, once secular trends are removed via **consecutive first differences**, "
+            f"the period-to-period correlation is **`{stats_summary.diff_pearson_r:+.2f}`** "
+            f"(`p = {stats_summary.diff_pearson_p:.3f}` across `{stats_summary.diff_n}` consecutive pairs)"
+            if stats_summary.diff_n >= 3 and not pd.isna(stats_summary.diff_pearson_r)
+            else "Too few consecutive pairs remain in this window to compute a reliable first-difference check"
+        )
+        st.info(
+            f"""
+💡 **Analytical Interpretation & Methodological Caveat:**
 
-    with col_info:
-        st.subheader("Statistical Fit")
-        r2 = r_val ** 2
-        st.markdown(f"""
-        * **R² (Determination):** `{r2:.3f}`
-        * **Slope:** `{slope:.2f}`
-        * **P-value:** `{p_val:.4e}`
-        """)
-        if abs(pearson_val) >= 0.5:
-            st.success("✅ Strong Inverse Alignment")
-        else:
-            st.info("ℹ️ Moderate Correlation")
+* **Level Co-Movement ({start_date.year} – {end_date.year}):** Across the selected window (`n = {stats_summary.n_obs}`), the paired levels exhibit a **{stats_summary.correlation_label.lower()}** linear relationship (*Pearson `r = {stats_summary.pearson_r:+.2f}`*, *Spearman `ρ = {stats_summary.spearman_rho:+.2f}`*).
 
-    # ── Dynamic Data Storytelling Card ─────────────────────────────────────
-    st.info(
-        f"""
-        💡 **Analytical Interpretation:**
+* **OLS Sensitivity:** Each 1-meter drop in Euphrates water elevation corresponds in level-space to an average Gold price {slope_direction} of **`${abs(stats_summary.ols_slope):,.2f}/oz`** (*`R² = {stats_summary.r_squared:.1%}`* of level variance).
 
-        * **Inverse Correlation Dynamics:** The paired time series demonstrates a sustained structural divergence across the observation window ({start_date.year} – {end_date.year}); persistent declines in hydrological water elevation closely coincide with secular bull cycles in global gold valuations *(Pearson correlation: `{pearson_val:.2f}`)*.
+* **Non-Stationarity Check (Spurious Trend Guard):** Gold prices exhibit a strong multi-year upward trend while river hydrology follows seasonal and multi-year drought cycles. {diff_note} — demonstrating that level correlation reflects long-term macro vs. hydrological divergence rather than a direct short-term causal link.
+"""
+        )
 
-        * **Valuation Sensitivity (OLS Fit):** The linear regression model indicates that each 1-meter drop in Euphrates water elevation is empirically associated with an average gold price appreciation of the cross-sectional variance.
-        """
-    )
+        rolling_df = compute_rolling_correlation(filtered, window=ROLLING_CORR_WINDOW)
+        if not rolling_df.empty:
+            fig_roll = build_rolling_correlation_chart(rolling_df, window=ROLLING_CORR_WINDOW)
+            st.plotly_chart(fig_roll, width="stretch", theme=None)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TAB 3: Data Summary & Export
 # ═══════════════════════════════════════════════════════════════════════════
 with tab3:
     st.subheader("📊 Annual Aggregated Summary")
-    yearly_summary = filtered.groupby('Year').agg(
-        Gold_Avg=('Gold_Price', 'mean'),
-        Gold_Min=('Gold_Price', 'min'),
-        Gold_Max=('Gold_Price', 'max'),
-        Water_Level_Avg=('Euphrates_Level_m', 'mean'),
-        Water_Level_Min=('Euphrates_Level_m', 'min'),
-        Water_Level_Max=('Euphrates_Level_m', 'max')
-    ).round(2)
+    yearly_summary = build_annual_summary(filtered)
     st.dataframe(yearly_summary, width="stretch")
 
-    csv_data = filtered[['Date', 'Gold_Price', 'Euphrates_Level_m']].to_csv(index=False).encode('utf-8')
+    with st.expander("🔎 Aligned Observations Table", expanded=False):
+        display_df = filtered[
+            [
+                "Date",
+                "Gold_Price",
+                "Euphrates_Level_m",
+                "WSE_Uncertainty_m",
+                "Pass_Count",
+                "Gold_Trading_Days",
+                "Alignment_Lag_Days",
+            ]
+        ].copy()
+        display_df["Date"] = display_df["Date"].dt.strftime("%Y-%m-%d")
+        display_df = display_df.rename(
+            columns={
+                "Gold_Price": "Gold (USD/oz)",
+                "Euphrates_Level_m": "Water Level (m)",
+                "WSE_Uncertainty_m": "Uncertainty ±(m)",
+                "Pass_Count": "Passes",
+                "Gold_Trading_Days": "Gold Days",
+                "Alignment_Lag_Days": "Match Lag (d)",
+            }
+        )
+        st.dataframe(display_df.round(3), width="stretch", hide_index=True)
+
+    export_df = filtered[
+        [
+            "Date",
+            "Gold_Price",
+            "Euphrates_Level_m",
+            "WSE_Uncertainty_m",
+            "Pass_Count",
+            "Gold_Trading_Days",
+            "Alignment_Lag_Days",
+        ]
+    ].copy()
+    export_df["Alignment_Mode"] = alignment_mode
+    csv_data = export_df.to_csv(index=False).encode("utf-8")
+
     st.download_button(
         label="📥 Download Merged Dataset (CSV)",
         data=csv_data,
         file_name=f"gold_vs_euphrates_{start_date}_{end_date}.csv",
-        mime="text/csv"
+        mime="text/csv",
+        key="download_csv_btn",
     )
 
 # ─── Footer ─────────────────────────────────────────────────────────────────
-st.caption("Data Sources: DAHITI Satellite Altimetry (Station 41518, DGFI-TUM) | Gold Spot/Futures via Yahoo Finance (`GC=F`).")
+st.caption(
+    f"Data Sources: DAHITI Satellite Altimetry (Station {DAHITI_STATION_ID}, DGFI-TUM · {DAHITI_SATELLITE_MISSION}) "
+    "| Gold Futures via Yahoo Finance (`GC=F`) with bundled local fallback snapshots."
+)
